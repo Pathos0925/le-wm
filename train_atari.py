@@ -76,6 +76,14 @@ class TrainConfig:
     # don't degenerate to constant predictors.
     reward_pos_weight: float = 10.0
     done_pos_weight: float = 10.0
+    # Inverse-dynamics auxiliary loss weight. With AdaLN-zero gates and
+    # frame-skip-4 Atari, action's effect on next-frame prediction is too
+    # weak to push the gates open from zero — predictor stays action-blind.
+    # This loss directly forces (z_t, z_{t+1}) to encode a_t. Default 2.0
+    # was chosen empirically: at 0.5 the loss was swamped by SIGReg's
+    # ~9× larger contribution and the encoder stayed action-blind through
+    # 1k steps; at 2.0 a phase transition fires by step ~1100 of epoch 0.
+    inv_dyn_weight: float = 2.0
 
     # Optim
     lr: float = 1e-4
@@ -146,6 +154,12 @@ def build_model(cfg: TrainConfig) -> JEPA:
         hidden_dim=cfg.head_hidden,
         norm_fn=torch.nn.LayerNorm,
     )
+    inv_dyn_head = MLP(
+        input_dim=2 * cfg.embed_dim,
+        output_dim=cfg.num_actions,
+        hidden_dim=cfg.head_hidden,
+        norm_fn=torch.nn.LayerNorm,
+    )
     return JEPA(
         encoder=encoder,
         predictor=predictor,
@@ -154,6 +168,7 @@ def build_model(cfg: TrainConfig) -> JEPA:
         pred_proj=pred_proj,
         reward_head=reward_head,
         done_head=done_head,
+        inverse_dynamics_head=inv_dyn_head,
     )
 
 
@@ -212,6 +227,17 @@ def step(
         )
         loss = loss + cfg.done_weight * done_loss
         metrics["done"] = done_loss.item()
+
+    # Inverse dynamics: predict a_t from (z_t, z_{t+1}).
+    inv_logits = model.predict_action(emb[:, :-1], emb[:, 1:])
+    if inv_logits is not None:
+        # batch["action"] is (B, T, 1) int64; targets shape (B, T-1).
+        tgt_a = batch["action"][:, :-1].long().squeeze(-1)
+        inv_loss = F.cross_entropy(
+            inv_logits.flatten(0, 1), tgt_a.flatten()
+        )
+        loss = loss + cfg.inv_dyn_weight * inv_loss
+        metrics["inv_dyn"] = inv_loss.item()
 
     metrics["loss"] = loss.item()
     return loss, metrics

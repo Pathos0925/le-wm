@@ -20,6 +20,7 @@ class JEPA(nn.Module):
         reward_head=None,
         done_head=None,
         value_head=None,
+        inverse_dynamics_head=None,
     ):
         super().__init__()
 
@@ -34,6 +35,11 @@ class JEPA(nn.Module):
         self.reward_head = reward_head
         self.done_head = done_head
         self.value_head = value_head
+        # Inverse-dynamics head: takes [z_t || z_{t+1}] -> action logits.
+        # Forces consecutive encoded embeddings to carry action information,
+        # which in turn forces the predictor to use its action input (else
+        # ẑ_{t+1} can't match z_{t+1} which now depends on a_t).
+        self.inverse_dynamics_head = inverse_dynamics_head
 
     def predict_reward(self, emb):
         """Apply the reward head to embeddings of shape ``(..., D)``.
@@ -48,6 +54,16 @@ class JEPA(nn.Module):
 
     def predict_value(self, emb):
         return None if self.value_head is None else self.value_head(emb)
+
+    def predict_action(self, emb_t, emb_t1):
+        """Inverse dynamics: predict a_t from (z_t, z_{t+1}). Returns logits
+        of shape ``(..., num_actions)`` or ``None`` if no head is attached.
+        Used for the auxiliary training loss only — not consumed at planning
+        time.
+        """
+        if self.inverse_dynamics_head is None:
+            return None
+        return self.inverse_dynamics_head(torch.cat([emb_t, emb_t1], dim=-1))
 
     def encode(self, info):
         """Encode observations and actions into embeddings.

@@ -36,6 +36,7 @@ import torch.nn.functional as F
 
 from actor import CategoricalActor
 from atari_env import make_env
+from atari_io import HDF5EpisodeWriter
 from jepa import JEPA
 from train_atari import TrainConfig, build_model
 
@@ -224,10 +225,21 @@ def evaluate(
     actor: Optional[CategoricalActor] = None,
     actor_temperature: float = 1.0,
     actor_argmax: bool = False,
+    record_path: Optional[Path] = None,
 ) -> list[float]:
-    env = make_env(env_name, seed=seed)
+    env = make_env(
+        env_name,
+        seed=seed,
+        render_mode="rgb_array" if record_path is not None else None,
+    )
     rng = np.random.default_rng(seed)
     returns: list[float] = []
+    K = cfg.num_actions if cfg is not None else env.action_space.n
+    recorder = (
+        HDF5EpisodeWriter(record_path, mode="overwrite") if record_path else None
+    )
+    if recorder is not None:
+        recorder.__enter__()
 
     H = cfg.history_size if cfg else 3
     planner: Optional[CategoricalCEM] = None
@@ -255,12 +267,37 @@ def evaluate(
         plan_time = 0.0
         plan_calls = 0
 
+        # Per-step recordings (kept only when --record-path is set).
+        rec_frames: list[np.ndarray] = []
+        rec_actions: list[int] = []
+        rec_rewards: list[float] = []
+        rec_dones: list[bool] = []
+        rec_value: list[float] = []
+        rec_probs: list[np.ndarray] = []
+        rec_step_idx: list[int] = []
+
+        def record_step(rgb, a, r, d, v, p):
+            if recorder is None:
+                return
+            rec_frames.append(rgb)
+            rec_actions.append(int(a))
+            rec_rewards.append(float(r))
+            rec_dones.append(bool(d))
+            rec_value.append(float(v))
+            rec_probs.append(p.astype(np.float32))
+            rec_step_idx.append(len(rec_step_idx))
+
         # Bootstrap: take H-1 noops so the buffer holds H-1 frames + H-1 actions.
-        # After the loop the next obs we observe will be the H-th frame.
         for _ in range(H - 1):
             history.append_frame(np.asarray(obs, dtype=np.uint8))
             history.append_action(0)
+            if recorder is not None:
+                rgb = env.render()
+            else:
+                rgb = None
             obs, r, terminated, truncated, _ = env.step(0)
+            if recorder is not None:
+                record_step(rgb, 0, r, terminated or truncated, 0.0, np.zeros(K))
             ep_return += float(r)
             ep_steps += 1
             if terminated or truncated:
@@ -268,25 +305,31 @@ def evaluate(
 
         while not (terminated or truncated) and ep_steps < max_episode_steps:
             history.append_frame(np.asarray(obs, dtype=np.uint8))
+            v_step = 0.0
+            probs_step = np.zeros(K, dtype=np.float32)
+
             if not history.is_ready():
                 action = 0  # safety: should not normally hit
             elif policy == "random":
                 action = int(env.action_space.sample())
             elif policy == "cem_eps" and rng.random() < eps:
-                # ε-greedy: with prob eps, take a uniformly-random action.
                 action = int(env.action_space.sample())
             elif policy == "actor":
                 pixels_t, _ = history.tensors(device)
                 t0 = time.time()
                 with torch.no_grad():
                     enc_out = model.encode({"pixels": pixels_t})
-                    z = enc_out["emb"][:, -1]  # (1, D) — most recent encoded state
+                    z = enc_out["emb"][:, -1]  # (1, D)
                     logits = actor(z) / actor_temperature
                     if actor_argmax:
                         a = logits.argmax(dim=-1)
                     else:
                         a = torch.distributions.Categorical(logits=logits).sample()
                     action = int(a.item())
+                    if recorder is not None:
+                        probs_step = torch.softmax(logits, dim=-1)[0].cpu().numpy()
+                        if model.value_head is not None:
+                            v_step = float(model.value_head(z)[0, 0].item())
                 plan_time += time.time() - t0
                 plan_calls += 1
             else:
@@ -295,12 +338,40 @@ def evaluate(
                 action = planner.plan(pixels_t, actions_t)
                 plan_time += time.time() - t0
                 plan_calls += 1
+                if recorder is not None and model is not None:
+                    with torch.no_grad():
+                        enc_out = model.encode({"pixels": pixels_t})
+                        z = enc_out["emb"][:, -1]
+                        if model.value_head is not None:
+                            v_step = float(model.value_head(z)[0, 0].item())
+                    probs_step[action] = 1.0  # CEM is deterministic per call
 
             history.append_action(action)
+
+            if recorder is not None:
+                rgb = env.render()
+            else:
+                rgb = None
+
             next_obs, r, terminated, truncated, _ = env.step(action)
+            if recorder is not None:
+                record_step(rgb, action, r, terminated or truncated, v_step, probs_step)
             obs = next_obs
             ep_return += float(r)
             ep_steps += 1
+
+        if recorder is not None and rec_frames:
+            ep_data = {
+                "frames": [np.asarray(f, dtype=np.uint8) for f in rec_frames],
+                "action": [np.array([a], dtype=np.int64) for a in rec_actions],
+                "reward": [np.array([r], dtype=np.float32) for r in rec_rewards],
+                "done": [np.array([d], dtype=bool) for d in rec_dones],
+                "value": [np.array([v], dtype=np.float32) for v in rec_value],
+                "action_probs": [p.astype(np.float32) for p in rec_probs],
+                "episode_idx": [np.array([ep], dtype=np.int32) for _ in rec_step_idx],
+                "step_idx": [np.array([s], dtype=np.int32) for s in rec_step_idx],
+            }
+            recorder.write_episode(ep_data)
 
         returns.append(ep_return)
         plan_avg = (plan_time / plan_calls * 1000.0) if plan_calls else 0.0
@@ -309,6 +380,8 @@ def evaluate(
             f"plan_t/step={plan_avg:.1f}ms"
         )
 
+    if recorder is not None:
+        recorder.__exit__(None, None, None)
     env.close()
     return returns
 
@@ -343,6 +416,12 @@ def main():
     ap.add_argument("--max-episode-steps", type=int, default=5000)
     ap.add_argument(
         "--device", default="cuda" if torch.cuda.is_available() else "cpu"
+    )
+    ap.add_argument(
+        "--record-path", type=str, default=None,
+        help="If set, dumps an HDF5 trace of every episode (raw RGB frames + "
+             "actions + rewards + value + action probs). Pair with "
+             "scripts/replay_episode.py to render an annotated MP4.",
     )
     args = ap.parse_args()
 
@@ -383,6 +462,7 @@ def main():
         actor=actor,
         actor_temperature=args.actor_temperature,
         actor_argmax=args.actor_argmax,
+        record_path=Path(args.record_path) if args.record_path else None,
     )
     arr = np.array(returns, dtype=np.float32)
     print(

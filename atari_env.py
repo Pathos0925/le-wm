@@ -36,13 +36,19 @@ def make_env(
     repeat_action_probability: float = 0.25,
     full_action_space: bool = False,
     noop_max: int = 30,
+    render_mode: str | None = None,
 ) -> gym.Env:
-    """Build an Atari env with the standard preprocessing + frame stack."""
+    """Build an Atari env with the standard preprocessing + frame stack.
+
+    ``render_mode='rgb_array'`` exposes ``env.render()`` returning the raw
+    210x160x3 RGB frame at each step — useful for record/replay overlays.
+    """
     env = gym.make(
         env_name,
         frameskip=1,  # -v5 default is 4; disable so AtariPreprocessing owns frame_skip
         repeat_action_probability=repeat_action_probability,
         full_action_space=full_action_space,
+        render_mode=render_mode,
     )
     env = AtariPreprocessing(
         env,

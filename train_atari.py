@@ -71,6 +71,11 @@ class TrainConfig:
     sigreg_weight: float = 0.09
     reward_weight: float = 1.0
     done_weight: float = 0.5
+    # Random-Atari rewards / dones are extremely sparse (~2% non-zero, ~0.1%
+    # done in random Pong). Upweight them in the per-row loss so the heads
+    # don't degenerate to constant predictors.
+    reward_pos_weight: float = 10.0
+    done_pos_weight: float = 10.0
 
     # Optim
     lr: float = 1e-4
@@ -112,17 +117,22 @@ def build_model(cfg: TrainConfig) -> JEPA:
     action_encoder = DiscreteActionEmbedder(
         num_actions=cfg.num_actions, emb_dim=cfg.embed_dim
     )
+    # LayerNorm in the projector / pred_proj instead of BatchNorm1d: with BN
+    # the train-time batch-stat normalization masks any underlying collapse
+    # (SIGReg sees a "Gaussian" batch every step) but at eval time running
+    # stats expose it. LayerNorm normalizes per-sample so train/eval agree
+    # and SIGReg does its actual job.
     projector = MLP(
         input_dim=cfg.encoder_hidden,
         output_dim=cfg.embed_dim,
         hidden_dim=2 * cfg.encoder_hidden,
-        norm_fn=torch.nn.BatchNorm1d,
+        norm_fn=torch.nn.LayerNorm,
     )
     pred_proj = MLP(
         input_dim=cfg.encoder_hidden,
         output_dim=cfg.embed_dim,
         hidden_dim=2 * cfg.encoder_hidden,
-        norm_fn=torch.nn.BatchNorm1d,
+        norm_fn=torch.nn.LayerNorm,
     )
     reward_head = MLP(
         input_dim=cfg.embed_dim,
@@ -179,14 +189,27 @@ def step(
     pred_r = model.predict_reward(pred_emb)
     if pred_r is not None:
         tgt_r = batch["reward"][:, :n_pred].float().squeeze(-1)
-        reward_loss = F.mse_loss(pred_r.squeeze(-1), tgt_r)
+        # Weighted MSE so the rare non-zero rewards don't get washed out.
+        r_w = torch.where(
+            tgt_r.abs() > 0,
+            torch.full_like(tgt_r, cfg.reward_pos_weight),
+            torch.ones_like(tgt_r),
+        )
+        reward_loss = ((pred_r.squeeze(-1) - tgt_r).pow(2) * r_w).mean()
         loss = loss + cfg.reward_weight * reward_loss
         metrics["reward"] = reward_loss.item()
 
     pred_d = model.predict_done(pred_emb)
     if pred_d is not None:
         tgt_d = batch["done"][:, :n_pred].float().squeeze(-1)
-        done_loss = F.binary_cross_entropy_with_logits(pred_d.squeeze(-1), tgt_d)
+        d_w = torch.where(
+            tgt_d > 0.5,
+            torch.full_like(tgt_d, cfg.done_pos_weight),
+            torch.ones_like(tgt_d),
+        )
+        done_loss = F.binary_cross_entropy_with_logits(
+            pred_d.squeeze(-1), tgt_d, weight=d_w
+        )
         loss = loss + cfg.done_weight * done_loss
         metrics["done"] = done_loss.item()
 

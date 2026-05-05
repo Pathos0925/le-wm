@@ -34,6 +34,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from actor import CategoricalActor
 from atari_env import make_env
 from jepa import JEPA
 from train_atari import TrainConfig, build_model
@@ -176,6 +177,36 @@ def load_model(ckpt_path: Path, device: str) -> tuple[JEPA, TrainConfig]:
     return model, cfg
 
 
+def load_actor_bundle(
+    actor_ckpt_path: Path, device: str
+) -> tuple[JEPA, TrainConfig, CategoricalActor, bool]:
+    """Load a trained actor + its frozen world model.
+
+    Returns ``(world_model, wm_cfg, actor, sample_actions)``. The actor
+    checkpoint stores the path of the world-model checkpoint it was
+    trained against; we resolve it relative to the actor file's parent
+    cache_dir if the absolute path no longer exists.
+    """
+    ckpt = torch.load(actor_ckpt_path, map_location=device, weights_only=False)
+    wm_path = Path(ckpt["wm_checkpoint"])
+    if not wm_path.exists():
+        raise FileNotFoundError(f"linked world-model checkpoint not found: {wm_path}")
+    wm_cfg = TrainConfig(**ckpt["wm_config"])
+    wm = build_model(wm_cfg).to(device)
+    wm_ckpt = torch.load(wm_path, map_location=device, weights_only=False)
+    wm.load_state_dict(wm_ckpt["model"])
+    wm.eval()
+
+    actor = CategoricalActor(
+        embed_dim=wm_cfg.embed_dim,
+        num_actions=wm_cfg.num_actions,
+        hidden_dim=wm_cfg.head_hidden,
+    ).to(device)
+    actor.load_state_dict(ckpt["actor"])
+    actor.eval()
+    return wm, wm_cfg, actor, True
+
+
 def evaluate(
     env_name: str,
     model: Optional[JEPA],
@@ -190,6 +221,9 @@ def evaluate(
     device: str,
     max_episode_steps: int = 5000,
     eps: float = 0.0,
+    actor: Optional[CategoricalActor] = None,
+    actor_temperature: float = 1.0,
+    actor_argmax: bool = False,
 ) -> list[float]:
     env = make_env(env_name, seed=seed)
     rng = np.random.default_rng(seed)
@@ -240,9 +274,21 @@ def evaluate(
                 action = int(env.action_space.sample())
             elif policy == "cem_eps" and rng.random() < eps:
                 # ε-greedy: with prob eps, take a uniformly-random action.
-                # Helps escape degenerate fixed points where CEM converges
-                # to a single action that produces a stuck paddle position.
                 action = int(env.action_space.sample())
+            elif policy == "actor":
+                pixels_t, _ = history.tensors(device)
+                t0 = time.time()
+                with torch.no_grad():
+                    enc_out = model.encode({"pixels": pixels_t})
+                    z = enc_out["emb"][:, -1]  # (1, D) — most recent encoded state
+                    logits = actor(z) / actor_temperature
+                    if actor_argmax:
+                        a = logits.argmax(dim=-1)
+                    else:
+                        a = torch.distributions.Categorical(logits=logits).sample()
+                    action = int(a.item())
+                plan_time += time.time() - t0
+                plan_calls += 1
             else:
                 pixels_t, actions_t = history.tensors(device)
                 t0 = time.time()
@@ -273,13 +319,20 @@ def main():
     ap.add_argument("--env", default="ALE/Pong-v5")
     ap.add_argument(
         "--policy",
-        choices=["cem", "cem_eps", "random"],
+        choices=["cem", "cem_eps", "random", "actor"],
         default="cem",
-        help="cem requires --checkpoint; cem_eps mixes random with CEM (--eps).",
+        help="cem/cem_eps require --checkpoint (a world-model ckpt); "
+             "actor requires --actor-checkpoint (a train_actor_critic ckpt).",
     )
     ap.add_argument(
         "--eps", type=float, default=0.3,
         help="ε for cem_eps: fraction of steps that take a uniform-random action.",
+    )
+    ap.add_argument("--actor-checkpoint", type=str, default=None)
+    ap.add_argument("--actor-temperature", type=float, default=1.0)
+    ap.add_argument(
+        "--actor-argmax", action="store_true",
+        help="Greedy mode: take argmax of actor logits instead of sampling.",
     )
     ap.add_argument("--num-episodes", type=int, default=5)
     ap.add_argument("--horizon", type=int, default=15)
@@ -295,12 +348,23 @@ def main():
 
     model: Optional[JEPA] = None
     cfg: Optional[TrainConfig] = None
+    actor: Optional[CategoricalActor] = None
     if args.policy in ("cem", "cem_eps"):
         if args.checkpoint is None:
             raise SystemExit(f"--checkpoint required for --policy {args.policy}")
         model, cfg = load_model(Path(args.checkpoint), args.device)
         n_p = sum(p.numel() for p in model.parameters()) / 1e6
         print(f"[init] loaded {args.checkpoint}: {n_p:.1f}M params  H={cfg.history_size}")
+    elif args.policy == "actor":
+        if args.actor_checkpoint is None:
+            raise SystemExit("--actor-checkpoint required for --policy actor")
+        model, cfg, actor, _ = load_actor_bundle(Path(args.actor_checkpoint), args.device)
+        n_p = sum(p.numel() for p in model.parameters()) / 1e6
+        n_a = sum(p.numel() for p in actor.parameters()) / 1e6
+        print(
+            f"[init] loaded actor={args.actor_checkpoint}  wm={n_p:.1f}M  actor={n_a:.2f}M  H={cfg.history_size}"
+            f"  argmax={args.actor_argmax}  T={args.actor_temperature}"
+        )
 
     returns = evaluate(
         env_name=args.env,
@@ -316,6 +380,9 @@ def main():
         device=args.device,
         max_episode_steps=args.max_episode_steps,
         eps=args.eps,
+        actor=actor,
+        actor_temperature=args.actor_temperature,
+        actor_argmax=args.actor_argmax,
     )
     arr = np.array(returns, dtype=np.float32)
     print(

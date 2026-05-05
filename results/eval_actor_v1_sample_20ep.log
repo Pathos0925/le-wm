@@ -1,0 +1,25 @@
+A.L.E: Arcade Learning Environment (version 0.11.2+ecc1138)
+[Powered by Stella]
+[init] loaded actor=/tmp/stablewm/lewm_atari_actor_v1/lewm_atari_actor_v1_weights.pt  wm=6.3M  actor=0.10M  H=3  argmax=False  T=1.0
+[actor  ep 0] return=-14.0 steps=1500 plan_t/step=1.0ms
+[actor  ep 1] return=-19.0 steps=1466 plan_t/step=0.7ms
+[actor  ep 2] return=-10.0 steps=1500 plan_t/step=0.7ms
+[actor  ep 3] return=-17.0 steps=1429 plan_t/step=0.7ms
+[actor  ep 4] return=-13.0 steps=1500 plan_t/step=0.7ms
+[actor  ep 5] return=-17.0 steps=1365 plan_t/step=0.7ms
+[actor  ep 6] return=-18.0 steps=1500 plan_t/step=0.7ms
+[actor  ep 7] return=-15.0 steps=1500 plan_t/step=0.7ms
+[actor  ep 8] return=-16.0 steps=1500 plan_t/step=0.7ms
+[actor  ep 9] return=-13.0 steps=1500 plan_t/step=0.7ms
+[actor  ep 10] return=-14.0 steps=1500 plan_t/step=0.7ms
+[actor  ep 11] return=-15.0 steps=1500 plan_t/step=0.7ms
+[actor  ep 12] return=-15.0 steps=1500 plan_t/step=0.7ms
+[actor  ep 13] return=-14.0 steps=1500 plan_t/step=0.7ms
+[actor  ep 14] return=-19.0 steps=1467 plan_t/step=0.7ms
+[actor  ep 15] return=-16.0 steps=1500 plan_t/step=0.7ms
+[actor  ep 16] return=-16.0 steps=1472 plan_t/step=0.7ms
+[actor  ep 17] return=-10.0 steps=1500 plan_t/step=0.7ms
+[actor  ep 18] return=-17.0 steps=1500 plan_t/step=0.7ms
+[actor  ep 19] return=-15.0 steps=1500 plan_t/step=0.7ms
+
+[actor ] mean=-15.15  std=2.41  min=-19.0  max=-10.0  n=20

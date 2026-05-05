@@ -71,6 +71,8 @@ class TrainConfig:
     sigreg_weight: float = 0.09
     reward_weight: float = 1.0
     done_weight: float = 0.5
+    value_weight: float = 1.0
+    gamma: float = 0.99  # must match the gamma used to precompute return_to_go
     # Random-Atari rewards / dones are extremely sparse (~2% non-zero, ~0.1%
     # done in random Pong). Upweight them in the per-row loss so the heads
     # don't degenerate to constant predictors.
@@ -160,6 +162,12 @@ def build_model(cfg: TrainConfig) -> JEPA:
         hidden_dim=cfg.head_hidden,
         norm_fn=torch.nn.LayerNorm,
     )
+    value_head = MLP(
+        input_dim=cfg.embed_dim,
+        output_dim=1,
+        hidden_dim=cfg.head_hidden,
+        norm_fn=torch.nn.LayerNorm,
+    )
     return JEPA(
         encoder=encoder,
         predictor=predictor,
@@ -168,6 +176,7 @@ def build_model(cfg: TrainConfig) -> JEPA:
         pred_proj=pred_proj,
         reward_head=reward_head,
         done_head=done_head,
+        value_head=value_head,
         inverse_dynamics_head=inv_dyn_head,
     )
 
@@ -239,6 +248,18 @@ def step(
         loss = loss + cfg.inv_dyn_weight * inv_loss
         metrics["inv_dyn"] = inv_loss.item()
 
+    # Value head: predict G_{t+1} from ẑ_{t+1} (i.e., from pred_emb). Same
+    # pattern as reward / done — at MPC time we apply value_head to the
+    # trailing predicted state to bootstrap beyond the planning horizon.
+    pred_v = model.predict_value(pred_emb)
+    if pred_v is not None and "return_to_go" in batch:
+        # batch["return_to_go"] is (B, T, 1); pred_emb covers t in [num_preds, T).
+        tgt_v = batch["return_to_go"][:, cfg.num_preds : cfg.num_preds + n_pred] \
+            .float().squeeze(-1)
+        value_loss = F.mse_loss(pred_v.squeeze(-1), tgt_v)
+        loss = loss + cfg.value_weight * value_loss
+        metrics["value"] = value_loss.item()
+
     metrics["loss"] = loss.item()
     return loss, metrics
 
@@ -275,16 +296,24 @@ def main():
     cache_dir = Path(args.cache_dir) if args.cache_dir else Path(get_cache_dir())
     print(f"[init] cache_dir={cache_dir} dataset={cfg.dataset}")
 
+    # Probe the file once to learn whether it includes a precomputed
+    # return_to_go column (run scripts/add_return_to_go.py to add one).
+    import h5py
+    with h5py.File(cache_dir / f"{cfg.dataset}.h5", "r") as f:
+        extra_keys = ["return_to_go"] if "return_to_go" in f else []
+
     num_steps = cfg.history_size + cfg.num_preds
     dataset = HDF5Dataset(
         name=cfg.dataset,
         frameskip=1,
         num_steps=num_steps,
-        keys_to_load=["pixels", "action", "reward", "done"],
-        keys_to_cache=["action", "reward", "done"],
+        keys_to_load=["pixels", "action", "reward", "done"] + extra_keys,
+        keys_to_cache=["action", "reward", "done"] + extra_keys,
         cache_dir=cache_dir,
     )
     print(f"[init] dataset clips={len(dataset)} columns={dataset.column_names}")
+    if "return_to_go" not in extra_keys:
+        print("[init] no return_to_go column — value head will not be trained")
 
     rnd_gen = torch.Generator().manual_seed(cfg.seed)
     n_train = int(cfg.train_split * len(dataset))

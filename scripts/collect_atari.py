@@ -28,23 +28,20 @@ import argparse
 import time
 from pathlib import Path
 
-import ale_py
-import gymnasium as gym
+import sys
+from pathlib import Path
+
 import h5py
 import hdf5plugin  # noqa: F401  (registers compression filters at import)
 import numpy as np
 
-try:
-    from gymnasium.wrappers import AtariPreprocessing, FrameStackObservation
-    _STACK_NAME = "FrameStackObservation"
-except ImportError:  # older gymnasium
-    from gymnasium.wrappers import AtariPreprocessing
-    from gymnasium.wrappers import FrameStack as FrameStackObservation
-    _STACK_NAME = "FrameStack"
+# scripts/ is not a package; add the repo root to sys.path so atari_env imports.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-gym.register_envs(ale_py)
+import gymnasium as gym  # noqa: E402
 
-from stable_worldmodel.data.utils import get_cache_dir
+from atari_env import make_env  # noqa: E402
+from stable_worldmodel.data.utils import get_cache_dir  # noqa: E402
 
 
 class HDF5EpisodeWriter:
@@ -119,33 +116,8 @@ class HDF5EpisodeWriter:
         self._global_ptr += ep_len
 
 
-def make_env(env_name: str, seed: int) -> gym.Env:
-    env = gym.make(
-        env_name,
-        frameskip=1,
-        repeat_action_probability=0.25,
-        full_action_space=False,
-    )
-    env = AtariPreprocessing(
-        env,
-        noop_max=30,
-        frame_skip=4,
-        screen_size=84,
-        terminal_on_life_loss=False,
-        grayscale_obs=True,
-        scale_obs=False,
-    )
-    if _STACK_NAME == "FrameStackObservation":
-        env = FrameStackObservation(env, stack_size=4)
-    else:
-        env = FrameStackObservation(env, num_stack=4)
-    env.reset(seed=seed)
-    env.action_space.seed(seed)
-    return env
-
-
 def collect(env_name: str, frames: int, out_path: Path, seed: int) -> None:
-    env = make_env(env_name, seed)
+    env = make_env(env_name, seed=seed)
     rng = np.random.default_rng(seed)
     ep_idx = 0
     total_frames = 0

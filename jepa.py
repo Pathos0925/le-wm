@@ -172,5 +172,77 @@ class JEPA(nn.Module):
         info_dict = self.rollout(info_dict, action_candidates)
 
         cost = self.criterion(info_dict)
-        
+
         return cost
+
+    def get_return_cost(
+        self,
+        info_dict: dict,
+        action_candidates: torch.Tensor,
+        gamma: float = 0.99,
+        history_size: int = 3,
+        use_done: bool = True,
+    ):
+        """Negative discounted return for each (B, S) action candidate.
+
+        Replaces the goal-conditioned ``criterion`` for reward-driven planning
+        (Atari, etc.). Requires a trained ``reward_head``; ``done_head`` and
+        ``value_head`` are used when present.
+
+        ``info_dict["pixels"]`` shape ``(B, S, H, C, H_img, W_img)`` — the
+        history window is encoded once and shared across the S candidates.
+        ``action_candidates`` shape ``(B, S, T, K)``: the first ``H-1`` entries
+        are the *actually executed* historical actions; position ``H-1`` is the
+        first action being optimized (the one we'll execute next); positions
+        ``[H, T)`` are the remaining optimized future actions. The number of
+        optimized actions is therefore ``T - H + 1``, which equals the number
+        of predicted future states.
+
+        Cost = ``-Σ_i γ^i · r̂_i · P(survive_{<i})`` plus an optional value
+        bootstrap at the trailing predicted state. Returns a ``(B, S)`` tensor;
+        smaller is better, matching the existing solver convention.
+        """
+        if self.reward_head is None:
+            raise RuntimeError(
+                "get_return_cost requires a reward_head; train one or fall "
+                "back to goal-conditioned get_cost."
+            )
+
+        device = next(self.parameters()).device
+        for k in list(info_dict.keys()):
+            if torch.is_tensor(info_dict[k]):
+                info_dict[k] = info_dict[k].to(device)
+        action_candidates = action_candidates.to(device)
+
+        H = info_dict["pixels"].size(2)
+        T = action_candidates.size(2)
+        plan_len = T - H + 1  # number of predicted future states / optimized actions
+        assert plan_len > 0, f"need T >= H, got T={T} H={H}"
+
+        info_dict = self.rollout(info_dict, action_candidates, history_size=history_size)
+        # predicted_emb: (B, S, T+1, D) — H encoded + (T-H+1) predicted future states
+        preds = info_dict["predicted_emb"]
+        plan_emb = preds[:, :, H : T + 1]  # (B, S, plan_len, D)
+
+        plan_r = self.reward_head(plan_emb).squeeze(-1)  # (B, S, plan_len)
+        discount = (gamma ** torch.arange(plan_len, device=device)).view(1, 1, -1)
+
+        if use_done and self.done_head is not None:
+            # Soft survival: P(not done at step t) accumulated up to but not including t.
+            plan_d = torch.sigmoid(self.done_head(plan_emb).squeeze(-1))  # (B, S, plan_len)
+            cum = torch.cumprod(1.0 - plan_d, dim=-1)
+            survive = torch.cat(
+                [torch.ones_like(cum[..., :1]), cum[..., :-1]], dim=-1
+            )
+            returns = (plan_r * discount * survive).sum(dim=-1)
+            tail_survive = cum[..., -1]
+        else:
+            returns = (plan_r * discount).sum(dim=-1)
+            tail_survive = torch.ones_like(returns)
+
+        if self.value_head is not None:
+            tail_emb = preds[:, :, T]  # (B, S, D)
+            tail_v = self.value_head(tail_emb).squeeze(-1)
+            returns = returns + (gamma**plan_len) * tail_survive * tail_v
+
+        return -returns

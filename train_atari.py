@@ -169,19 +169,23 @@ def step(
     loss = pred_loss + cfg.sigreg_weight * sig_loss
     metrics = {"pred": pred_loss.item(), "sigreg": sig_loss.item()}
 
-    # Reward / done heads are trained on encoded embeddings: r̂(z_t) ≈ r_t,
-    # d̂(z_t) ≈ done_t. At planning time we apply the same heads to predictor
-    # rollouts; consistency is upheld by the next-embedding MSE.
-    pred_r = model.predict_reward(emb)
+    # Reward / done heads are trained on PREDICTED next-step embeddings, so
+    # action choice flows through them at MPC time:
+    #   r_head(ẑ_{t+1})  ≈ reward[t]   (reward earned by a_t at z_t)
+    #   d_head(ẑ_{t+1})  ≈ done[t]
+    # ẑ_{t+1} = predict(z_{≤t}, a_{≤t}) depends on a_t, so different action
+    # sequences produce different scores during planning.
+    n_pred = pred_emb.size(1)  # number of predicted next-step embeddings
+    pred_r = model.predict_reward(pred_emb)
     if pred_r is not None:
-        tgt_r = batch["reward"].float().squeeze(-1)
+        tgt_r = batch["reward"][:, :n_pred].float().squeeze(-1)
         reward_loss = F.mse_loss(pred_r.squeeze(-1), tgt_r)
         loss = loss + cfg.reward_weight * reward_loss
         metrics["reward"] = reward_loss.item()
 
-    pred_d = model.predict_done(emb)
+    pred_d = model.predict_done(pred_emb)
     if pred_d is not None:
-        tgt_d = batch["done"].float().squeeze(-1)
+        tgt_d = batch["done"][:, :n_pred].float().squeeze(-1)
         done_loss = F.binary_cross_entropy_with_logits(pred_d.squeeze(-1), tgt_d)
         loss = loss + cfg.done_weight * done_loss
         metrics["done"] = done_loss.item()

@@ -189,6 +189,7 @@ def evaluate(
     seed: int,
     device: str,
     max_episode_steps: int = 5000,
+    eps: float = 0.0,
 ) -> list[float]:
     env = make_env(env_name, seed=seed)
     rng = np.random.default_rng(seed)
@@ -196,7 +197,7 @@ def evaluate(
 
     H = cfg.history_size if cfg else 3
     planner: Optional[CategoricalCEM] = None
-    if policy == "cem":
+    if policy in ("cem", "cem_eps"):
         assert model is not None and cfg is not None
         planner = CategoricalCEM(
             model=model,
@@ -237,6 +238,11 @@ def evaluate(
                 action = 0  # safety: should not normally hit
             elif policy == "random":
                 action = int(env.action_space.sample())
+            elif policy == "cem_eps" and rng.random() < eps:
+                # ε-greedy: with prob eps, take a uniformly-random action.
+                # Helps escape degenerate fixed points where CEM converges
+                # to a single action that produces a stuck paddle position.
+                action = int(env.action_space.sample())
             else:
                 pixels_t, actions_t = history.tensors(device)
                 t0 = time.time()
@@ -267,9 +273,13 @@ def main():
     ap.add_argument("--env", default="ALE/Pong-v5")
     ap.add_argument(
         "--policy",
-        choices=["cem", "random"],
+        choices=["cem", "cem_eps", "random"],
         default="cem",
-        help="cem requires --checkpoint",
+        help="cem requires --checkpoint; cem_eps mixes random with CEM (--eps).",
+    )
+    ap.add_argument(
+        "--eps", type=float, default=0.3,
+        help="ε for cem_eps: fraction of steps that take a uniform-random action.",
     )
     ap.add_argument("--num-episodes", type=int, default=5)
     ap.add_argument("--horizon", type=int, default=15)
@@ -285,9 +295,9 @@ def main():
 
     model: Optional[JEPA] = None
     cfg: Optional[TrainConfig] = None
-    if args.policy == "cem":
+    if args.policy in ("cem", "cem_eps"):
         if args.checkpoint is None:
-            raise SystemExit("--checkpoint required for --policy cem")
+            raise SystemExit(f"--checkpoint required for --policy {args.policy}")
         model, cfg = load_model(Path(args.checkpoint), args.device)
         n_p = sum(p.numel() for p in model.parameters()) / 1e6
         print(f"[init] loaded {args.checkpoint}: {n_p:.1f}M params  H={cfg.history_size}")
@@ -305,6 +315,7 @@ def main():
         seed=args.seed,
         device=args.device,
         max_episode_steps=args.max_episode_steps,
+        eps=args.eps,
     )
     arr = np.array(returns, dtype=np.float32)
     print(

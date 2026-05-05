@@ -83,14 +83,21 @@ class HDF5EpisodeWriter:
             self._f = None
 
     def _init_schema(self, sample_ep: dict) -> None:
+        # Blosc/zstd at level 3: ~3-5x compression on Atari pixels (lots of
+        # solid background) at near-zero CPU overhead vs uncompressed.
+        compression = hdf5plugin.Blosc(cname="zstd", clevel=3)
         for col, vals in sample_ep.items():
             sample = np.asarray(vals[0])
+            # 16-row chunks for pixels (~440KB each — good zstd block size,
+            # still fast on random access). Per-row for the small columns.
+            chunk_n = 16 if col == "pixels" else 1
             self._f.create_dataset(
                 col,
                 shape=(0, *sample.shape),
                 maxshape=(None, *sample.shape),
                 dtype=sample.dtype,
-                chunks=(1, *sample.shape),
+                chunks=(chunk_n, *sample.shape),
+                **compression,
             )
         self._f.create_dataset("ep_len", shape=(0,), maxshape=(None,), dtype=np.int32)
         self._f.create_dataset("ep_offset", shape=(0,), maxshape=(None,), dtype=np.int64)

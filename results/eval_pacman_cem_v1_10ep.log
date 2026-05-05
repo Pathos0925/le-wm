@@ -1,0 +1,15 @@
+A.L.E: Arcade Learning Environment (version 0.11.2+ecc1138)
+[Powered by Stella]
+[init] loaded /tmp/stablewm/lewm_atari_pacman_v1/lewm_atari_pacman_v1_weights.pt: 6.3M params  H=3
+[cem    ep 0] return=+750.0 steps=776 plan_t/step=113.5ms
+[cem    ep 1] return=+1050.0 steps=768 plan_t/step=98.4ms
+[cem    ep 2] return=+570.0 steps=602 plan_t/step=98.5ms
+[cem    ep 3] return=+270.0 steps=336 plan_t/step=98.5ms
+[cem    ep 4] return=+690.0 steps=536 plan_t/step=98.4ms
+[cem    ep 5] return=+420.0 steps=627 plan_t/step=98.5ms
+[cem    ep 6] return=+600.0 steps=598 plan_t/step=98.5ms
+[cem    ep 7] return=+950.0 steps=889 plan_t/step=98.4ms
+[cem    ep 8] return=+370.0 steps=523 plan_t/step=98.4ms
+[cem    ep 9] return=+170.0 steps=445 plan_t/step=98.4ms
+
+[cem   ] mean=+584.00  std=270.75  min=+170.0  max=+1050.0  n=10

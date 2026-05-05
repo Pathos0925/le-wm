@@ -1,7 +1,93 @@
+from dataclasses import dataclass
+
 import torch
 from torch import nn
 import torch.nn.functional as F
 from einops import rearrange
+
+
+@dataclass
+class _EncoderOutput:
+    """Mirror of HuggingFace's ModelOutput just enough for JEPA.encode."""
+
+    last_hidden_state: torch.Tensor
+
+
+class AtariCNN(nn.Module):
+    """DQN-style CNN encoder for Atari frame stacks.
+
+    Input:  ``pixels`` of shape ``(B, C, H, W)``, uint8 or float in ``[0, 255]``.
+    Output: HF-like object whose ``last_hidden_state[:, 0]`` is ``(B, hidden_size)``,
+        so it's a drop-in replacement for ``vit_hf`` in :class:`JEPA`.
+
+    Conv stack matches the original Mnih-et-al. DQN architecture; output spatial
+    size for ``image_size=84`` is ``7 x 7``. Pixels are normalized to ``[0, 1]``
+    inside ``forward`` so the upstream pipeline does not need an image transform.
+    """
+
+    def __init__(
+        self,
+        in_channels: int = 4,
+        hidden_size: int = 256,
+        image_size: int = 84,
+    ) -> None:
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_channels, 32, kernel_size=8, stride=4),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, 64, kernel_size=4, stride=2),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1),
+            nn.ReLU(inplace=True),
+        )
+        with torch.no_grad():
+            dummy = torch.zeros(1, in_channels, image_size, image_size)
+            n_flat = self.conv(dummy).flatten(1).size(1)
+        self.proj = nn.Sequential(nn.Linear(n_flat, hidden_size), nn.ReLU(inplace=True))
+        # Mimic ``transformers.PretrainedConfig`` for ``encoder.config.hidden_size``.
+        self.config = type("AtariCNNConfig", (), {"hidden_size": hidden_size})()
+
+    def forward(self, pixels: torch.Tensor, **_kwargs) -> _EncoderOutput:
+        # Accept uint8 or float in [0, 255]; AtariCNN owns its own normalization.
+        x = pixels.float() / 255.0
+        x = self.conv(x)
+        x = x.flatten(1)
+        x = self.proj(x)
+        return _EncoderOutput(last_hidden_state=x.unsqueeze(1))
+
+
+class DiscreteActionEmbedder(nn.Module):
+    """Embed discrete actions for :class:`JEPA`'s AdaLN-conditioned predictor.
+
+    Accepts both training-time integer ids and inference-time soft assignments
+    (one-hot or probability simplex from ``CategoricalCEMSolver``):
+      - ``(B, T)`` or ``(B, T, 1)`` integer ids, or
+      - ``(B, T, num_actions)`` floats summing to 1 along the last axis.
+    Output: ``(B, T, emb_dim)``.
+    """
+
+    def __init__(self, num_actions: int, emb_dim: int, mlp_scale: int = 4) -> None:
+        super().__init__()
+        self.num_actions = num_actions
+        self.emb_dim = emb_dim
+        hidden = mlp_scale * emb_dim
+        self.embed = nn.Sequential(
+            nn.Linear(num_actions, hidden),
+            nn.SiLU(),
+            nn.Linear(hidden, emb_dim),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if not x.is_floating_point():
+            if x.ndim == 3 and x.size(-1) == 1:
+                x = x.squeeze(-1)
+            x = F.one_hot(x.long(), num_classes=self.num_actions).float()
+        else:
+            assert x.size(-1) == self.num_actions, (
+                f"DiscreteActionEmbedder expects last dim = num_actions="
+                f"{self.num_actions}, got shape {tuple(x.shape)}"
+            )
+        return self.embed(x)
 
 def modulate(x, shift, scale):
     """AdaLN-zero modulation"""

@@ -17,6 +17,9 @@ class JEPA(nn.Module):
         action_encoder,
         projector=None,
         pred_proj=None,
+        reward_head=None,
+        done_head=None,
+        value_head=None,
     ):
         super().__init__()
 
@@ -25,6 +28,26 @@ class JEPA(nn.Module):
         self.action_encoder = action_encoder
         self.projector = projector or nn.Identity()
         self.pred_proj = pred_proj or nn.Identity()
+        # Optional auxiliary heads (Atari / reward-conditioned planning). When
+        # left as ``None`` the existing goal-conditioned behavior is preserved
+        # bit-for-bit, and these attributes are not registered as submodules.
+        self.reward_head = reward_head
+        self.done_head = done_head
+        self.value_head = value_head
+
+    def predict_reward(self, emb):
+        """Apply the reward head to embeddings of shape ``(..., D)``.
+
+        Returns ``None`` when no reward head was provided.
+        """
+        return None if self.reward_head is None else self.reward_head(emb)
+
+    def predict_done(self, emb):
+        """Apply the done head; returns logits."""
+        return None if self.done_head is None else self.done_head(emb)
+
+    def predict_value(self, emb):
+        return None if self.value_head is None else self.value_head(emb)
 
     def encode(self, info):
         """Encode observations and actions into embeddings.

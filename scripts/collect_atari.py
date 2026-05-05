@@ -31,8 +31,6 @@ from pathlib import Path
 import sys
 from pathlib import Path
 
-import h5py
-import hdf5plugin  # noqa: F401  (registers compression filters at import)
 import numpy as np
 
 # scripts/ is not a package; add the repo root to sys.path so atari_env imports.
@@ -41,86 +39,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import gymnasium as gym  # noqa: E402
 
 from atari_env import make_env  # noqa: E402
+from atari_io import HDF5EpisodeWriter  # noqa: E402
 from stable_worldmodel.data.utils import get_cache_dir  # noqa: E402
-
-
-class HDF5EpisodeWriter:
-    """Minimal append-style writer producing HDF5 files compatible with
-    stable_worldmodel.data.dataset.HDF5Dataset.
-
-    Layout: one resizable 1-D-on-axis-0 dataset per column, plus 1-D
-    `ep_len` and `ep_offset` metadata. Schema is inferred from the first
-    episode and locked thereafter. This is a local stand-in for the
-    HDF5Writer in stable_worldmodel git HEAD (not yet on PyPI 0.0.6).
-    """
-
-    def __init__(self, path: Path, mode: str = "overwrite") -> None:
-        if mode not in ("overwrite", "error", "append"):
-            raise ValueError(f"mode must be overwrite|error|append, got {mode}")
-        self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.mode = mode
-        self._f: h5py.File | None = None
-        self._initialized = False
-        self._global_ptr = 0
-
-    def __enter__(self) -> "HDF5EpisodeWriter":
-        exists = self.path.exists()
-        if exists and self.mode == "error":
-            raise FileExistsError(self.path)
-        if not exists or self.mode == "overwrite":
-            self._f = h5py.File(self.path, "w", libver="latest")
-        else:
-            self._f = h5py.File(self.path, "a", libver="latest")
-            if "ep_len" in self._f:
-                self._global_ptr = int(self._f["ep_len"][:].sum())
-                self._initialized = True
-        return self
-
-    def __exit__(self, *exc) -> None:
-        if self._f is not None:
-            self._f.close()
-            self._f = None
-
-    def _init_schema(self, sample_ep: dict) -> None:
-        # Blosc/zstd at level 3: ~3-5x compression on Atari pixels (lots of
-        # solid background) at near-zero CPU overhead vs uncompressed.
-        compression = hdf5plugin.Blosc(cname="zstd", clevel=3)
-        for col, vals in sample_ep.items():
-            sample = np.asarray(vals[0])
-            # 16-row chunks for pixels (~440KB each — good zstd block size,
-            # still fast on random access). Per-row for the small columns.
-            chunk_n = 16 if col == "pixels" else 1
-            self._f.create_dataset(
-                col,
-                shape=(0, *sample.shape),
-                maxshape=(None, *sample.shape),
-                dtype=sample.dtype,
-                chunks=(chunk_n, *sample.shape),
-                **compression,
-            )
-        self._f.create_dataset("ep_len", shape=(0,), maxshape=(None,), dtype=np.int32)
-        self._f.create_dataset("ep_offset", shape=(0,), maxshape=(None,), dtype=np.int64)
-
-    def write_episode(self, ep_data: dict) -> None:
-        assert self._f is not None, "writer used outside `with` block"
-        if not self._initialized:
-            self._init_schema(ep_data)
-            self._initialized = True
-
-        ep_len = len(next(iter(ep_data.values())))
-        for col, vals in ep_data.items():
-            ds = self._f[col]
-            ds.resize(self._global_ptr + ep_len, axis=0)
-            ds[self._global_ptr : self._global_ptr + ep_len] = np.asarray(vals)
-
-        n = self._f["ep_len"].shape[0]
-        self._f["ep_len"].resize(n + 1, axis=0)
-        self._f["ep_len"][n] = ep_len
-        self._f["ep_offset"].resize(n + 1, axis=0)
-        self._f["ep_offset"][n] = self._global_ptr
-
-        self._global_ptr += ep_len
 
 
 def collect(env_name: str, frames: int, out_path: Path, seed: int) -> None:

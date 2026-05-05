@@ -45,6 +45,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--path", required=True, help="HDF5 dataset file to modify in place")
     ap.add_argument("--gamma", type=float, default=0.99)
+    ap.add_argument(
+        "--clip-rewards", action="store_true",
+        help="Replace the reward column with sign(reward) before computing "
+             "return-to-go. Standard DQN-style fix for games with large "
+             "reward magnitudes (e.g. MsPacman has rewards up to 800; "
+             "without clipping the reward MSE explodes).",
+    )
     args = ap.parse_args()
 
     path = Path(args.path)
@@ -54,6 +61,15 @@ def main():
     t0 = time.time()
     with h5py.File(path, "r+") as f:
         rewards = f["reward"][:]
+
+        if args.clip_rewards:
+            n_pos = int((rewards > 0).sum())
+            n_neg = int((rewards < 0).sum())
+            print(f"clipping rewards to sign: {n_pos} positive, {n_neg} negative kept (magnitudes lost)")
+            clipped = np.sign(rewards).astype(np.float32)
+            f["reward"][...] = clipped
+            rewards = clipped
+
         ep_lens = f["ep_len"][:]
         ep_offsets = f["ep_offset"][:]
 

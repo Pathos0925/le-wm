@@ -1,0 +1,25 @@
+A.L.E: Arcade Learning Environment (version 0.11.2+ecc1138)
+[Powered by Stella]
+[init] loaded /tmp/stablewm/lewm_atari_v4/lewm_atari_v4_weights.pt: 6.3M params  H=3
+[cem    ep 0] return=-8.0 steps=1500 plan_t/step=98.7ms
+[cem    ep 1] return=-15.0 steps=1500 plan_t/step=98.4ms
+[cem    ep 2] return=-20.0 steps=1078 plan_t/step=98.4ms
+[cem    ep 3] return=-18.0 steps=1449 plan_t/step=98.4ms
+[cem    ep 4] return=-14.0 steps=1500 plan_t/step=98.4ms
+[cem    ep 5] return=-13.0 steps=1500 plan_t/step=98.4ms
+[cem    ep 6] return=-17.0 steps=1500 plan_t/step=98.4ms
+[cem    ep 7] return=-17.0 steps=1500 plan_t/step=98.4ms
+[cem    ep 8] return=-7.0 steps=1500 plan_t/step=98.4ms
+[cem    ep 9] return=-20.0 steps=1137 plan_t/step=98.4ms
+[cem    ep 10] return=-17.0 steps=1496 plan_t/step=98.4ms
+[cem    ep 11] return=-18.0 steps=1385 plan_t/step=98.4ms
+[cem    ep 12] return=-12.0 steps=1500 plan_t/step=98.4ms
+[cem    ep 13] return=-17.0 steps=1480 plan_t/step=98.4ms
+[cem    ep 14] return=-16.0 steps=1500 plan_t/step=98.4ms
+[cem    ep 15] return=-18.0 steps=1427 plan_t/step=98.4ms
+[cem    ep 16] return=-19.0 steps=1443 plan_t/step=98.4ms
+[cem    ep 17] return=-21.0 steps=1224 plan_t/step=98.4ms
+[cem    ep 18] return=-18.0 steps=1310 plan_t/step=98.4ms
+[cem    ep 19] return=-13.0 steps=1500 plan_t/step=98.4ms
+
+[cem   ] mean=-15.90  std=3.67  min=-21.0  max=-7.0  n=20
